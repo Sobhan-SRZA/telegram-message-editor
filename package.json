@@ -1,0 +1,32 @@
+{
+  "name": "telegram-message-editor",
+  "version": "1.0.0",
+  "description": "A Telegram automation tool to edit channel messages by appending custom text while preserving formatting, with support for ignoring specific content.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "telegram",
+    "automation",
+    "bot",
+    "message-editor",
+    "channel"
+  ],
+  "author": "Sobhan-SRZA (mr.sinre)",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sobhan-SRZA/telegram-message-editor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Sobhan-SRZA/telegram-message-editor/issues"
+  },
+  "homepage": "https://github.com/Sobhan-SRZA/telegram-message-editor#readme",
+  "dependencies": {
+    "dotenv": "^17.2.2",
+    "input": "^1.0.1",
+    "telegram": "^2.26.22"
+  }
+}
