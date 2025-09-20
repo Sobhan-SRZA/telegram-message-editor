@@ -13,7 +13,6 @@ const stringSession = new StringSession(process.env.TG_STRING_SESSION || "");
 const ignoreList = (process.env.IGNORE_LIST && process.env.IGNORE_LIST.split(", ")) || [
     "00:00"
 ];
-console.log("🚀 ~ ignoreList:", ignoreList)
 
 /**
  * Strip HTML tags from a string to get plain text
@@ -81,13 +80,20 @@ function sleep(ms) {
     const entity = await client.getEntity(target);
     let offsetId = 0; // Used to paginate through messages
     let edited = 0;   // Counter for how many messages were edited
+    const failedIds = new Set();
 
     while (edited < limit) {
+
         // Fetch messages in batches of 100
         const messages = await client.getMessages(entity, { limit: 100, offsetId });
-        if (!messages || !messages.length) break;
+        if (!messages || !messages.length)
+            break;
 
         for (const msg of messages) {
+            // Skip that message has failed.
+            if (failedIds.has(msg.id))
+                continue;
+
             if (edited >= limit)
                 break;
 
@@ -137,11 +143,20 @@ function sleep(ms) {
 
             catch (err) {
                 console.error("Edit failed:", msg.id, err.message || err);
+
+                // Handle error 400
+                if (err.code === 400 || String(err).includes("400")) {
+                    console.warn(`Skipped message ${msg.id} due to non-critical error.`);
+                }
+
                 // Stop if Telegram flood limit is hit
                 if (String(err).includes("FLOOD")) {
                     console.error("Flood error, stopping.");
                     process.exit(1);
                 }
+
+                failedIds.add(msg.id);
+                continue;
             }
         }
 
