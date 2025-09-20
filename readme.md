@@ -68,6 +68,20 @@ function getPlainText(htmlText) {
 
 ---
 
+### `isEditable(msg)`
+
+Determine if a message is editable.
+Telegram only allows editing text messages.
+Useful for fillter editable messages.
+
+```js
+function isEditable(msg) {
+    return msg && typeof msg.message === "string" && msg.message.length > 0;
+}
+```
+
+---
+
 ### `shouldIgnore(msgText, appendText)`
 
 Determines whether a message should be skipped.

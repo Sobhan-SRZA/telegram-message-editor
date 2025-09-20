@@ -8,170 +8,152 @@ const apiId = Number(process.env.TG_API_ID);
 const apiHash = process.env.TG_API_HASH;
 const stringSession = new StringSession(process.env.TG_STRING_SESSION || "");
 
-// List of texts to ignore during message edits
-// Any message containing these strings will remain unchanged
-const ignoreList = (process.env.IGNORE_LIST && process.env.IGNORE_LIST.split(", ")) || [
-    "00:00"
-];
+// List of texts to ignore during message edits (comma-separated in .env)
+const ignoreList = (process.env.IGNORE_LIST && process.env.IGNORE_LIST.split(", ")) || ["00:00"];
 
 /**
- * Strip HTML tags from a string to get plain text
- * Useful for comparing messages without formatting
+ * Remove HTML tags from a string
+ * @param {string} htmlText - Text containing HTML
+ * @returns {string} Plain text without HTML tags
  */
 function getPlainText(htmlText) {
     return htmlText.replace(/<\/?[^>]+(>|$)/g, "").trim();
 }
 
 /**
- * Determines whether a message should be ignored
- * - Checks if the message already contains the text to append
- * - Checks against a predefined ignore list
- * @param {string} msgText - The current message text
- * @param {string} appendText - The text we want to append
- * @returns {boolean} true if message should be skipped
+ * Check if a message should be skipped
+ * @param {string} msgText - Original message text
+ * @param {string} appendText - Text intended to append
+ * @returns {boolean} True if message should be ignored
  */
 function shouldIgnore(msgText, appendText) {
     const plainMsg = getPlainText(msgText);
     const plainAppend = getPlainText(appendText);
 
-    // Skip if message already contains the append text
     if (plainMsg.includes(plainAppend)) return true;
 
-    // Skip if message contains any text in the ignore list
-    for (const ignore of ignoreList) {
-        if (plainMsg.includes(getPlainText(ignore)))
-            return true;
-    }
-
-    return false;
+    return ignoreList.some(ignore => plainMsg.includes(getPlainText(ignore)));
 }
 
 /**
- * Simple sleep function for delaying async operations
- * @param {number} ms - milliseconds to wait
+ * Determine if a message is editable
+ * Telegram only allows editing text messages
+ * @param {object} msg - Message object from Telegram
+ * @returns {boolean} True if message is editable
+ */
+function isEditable(msg) {
+    return msg && typeof msg.message === "string" && msg.message.length > 0;
+}
+
+/**
+ * Sleep function for async delays
+ * @param {number} ms - milliseconds to delay
  */
 function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 (async () => {
     // Initialize Telegram client
     const client = new TelegramClient(stringSession, apiId, apiHash, {
-        connectionRetries: 5, // Retry connection on failure
+        connectionRetries: 5
     });
 
-    // Start client and handle login
+    // Login sequence
     await client.start({
         phoneNumber: async () => await input.text("Phone number: "),
         password: async () => await input.text("2FA password (if any): "),
         phoneCode: async () => await input.text("Code: "),
-        onError: (err) => console.log("Login error:", err),
+        onError: (err) => console.error("Login error:", err),
     });
 
-    console.log("Login successful");
-    console.log("Session:", client.session.save());
+    client.setParseMode("html"); // Set default parse mode
 
-    // Get target channel and user input for editing
+    console.log("Login successful");
+    console.log("Session string:", client.session.save());
+
+    // Collect user inputs
     const target = await input.text("Channel username (e.g. @mychannel): ");
     const appendText = await input.text("Text to append: ");
     const limit = Number(await input.text("How many messages to edit? ")) || 20;
     const delayMs = Number(await input.text("Delay between edits (ms): ")) || 1000;
 
     const entity = await client.getEntity(target);
-    let offsetId = 0; // Used to paginate through messages
-    let edited = 0;   // Counter for how many messages were edited
+    let offsetId = 0;
+    let edited = 0;
     const failedIds = new Set();
 
     while (edited < limit) {
-
-        // Fetch messages in batches of 100
+        // Fetch messages in batches
         const messages = await client.getMessages(entity, { limit: 100, offsetId });
-        if (!messages || !messages.length)
-            break;
+        if (!messages || !messages.length) break;
 
         for (const msg of messages) {
-            // Skip that message has failed.
-            if (failedIds.has(msg.id))
+            if (failedIds.has(msg.id) || edited >= limit) continue;
+
+            if (!isEditable(msg)) {
+                console.log(`Skipped message ${msg.id} (not editable)`);
+                failedIds.add(msg.id);
                 continue;
+            }
 
-            if (edited >= limit)
-                break;
+            if (shouldIgnore(msg.message, appendText)) continue;
 
-            // Skip messages with no text
-            if (!msg.message || typeof msg.message !== "string")
-                continue;
+            // Parse HTML append text
+            const [appendParsed, appendEntities = []] = client.parseMode.parse(appendText) || ["", []];
 
-            // Skip messages that should be ignored
-            if (shouldIgnore(msg.message, appendText))
-                continue;
-
-            // Parse append text for HTML formatting
-            client.setParseMode("html")
-            const [appendParsed, appendEntities] = client.parseMode.parse(appendText);
-
-            // Combine current message text with new append text
             const newText = msg.message + "\n\n" + appendParsed;
 
-            // Telegram messages cannot exceed 4096 characters
             if (newText.length > 4096) {
-                console.log(`Message ${msg.id} too long, skipped.`);
+                console.log(`Message ${msg.id} too long, skipped`);
+                failedIds.add(msg.id);
                 continue;
             }
 
             try {
-                // Merge existing formatting entities with new entities
-                // Offset new entities to appear after original text
                 const newEntities = [
                     ...(msg.entities || []),
-                    ...appendEntities.map(ent => {
-                        ent.offset += msg.message.length + 2; // +2 for "\n\n" separator
-                        return ent;
-                    })
+                    ...appendEntities.map(ent => ({ ...ent, offset: ent.offset + msg.message.length + 2 }))
                 ];
 
-                // Edit message with new text and updated formatting
-                await client.editMessage(entity, {
-                    message: msg.id,
-                    text: newText,
-                    formattingEntities: newEntities || []
-                });
+                const params = { message: msg.id, text: newText };
+                if (newEntities.length) params.formattingEntities = newEntities;
 
-                console.log("Edited:", msg.id);
+                await client.editMessage(entity, params);
+
+                console.log(`Edited message ${msg.id}`);
                 edited++;
-                await sleep(delayMs); // Wait before editing next message
-            }
+                await sleep(delayMs);
+            } catch (err) {
+                console.error(`Edit failed for ${msg.id}:`, err.message || err);
 
-            catch (err) {
-                console.error("Edit failed:", msg.id, err.message || err);
-
-                // Handle error 400
-                if (err.code === 400 || String(err).includes("400")) {
-                    console.warn(`Skipped message ${msg.id} due to non-critical error.`);
+                // Skip uneditable or unchanged messages
+                if (err.code === 400 || String(err).includes("MESSAGE_ID_INVALID") || String(err).includes("MESSAGE_NOT_MODIFIED")) {
+                    console.warn(`Skipped message ${msg.id} due to invalid or unchanged content.`);
+                    failedIds.add(msg.id);
+                    continue;
                 }
 
-                // Stop if Telegram flood limit is hit
+                // Stop on Telegram flood limit
                 if (String(err).includes("FLOOD")) {
-                    console.error("Flood error, stopping.");
-                    process.exit(1);
+                    console.error("Flood error detected, stopping execution.");
+                    return;
                 }
 
                 failedIds.add(msg.id);
-                continue;
             }
         }
 
-        // Update offsetId to paginate older messages
-        offsetId = Math.min(...messages.map((m) => m.id)) - 1;
+        const minId = Math.min(...messages.map(m => m.id));
+        if (!isFinite(minId)) break;
+
+        offsetId = minId - 1;
     }
 
     console.log(`Done. Edited ${edited} messages.`);
-    process.exit(0);
 })();
+
 /**
  * @copyright
  * Code by Sobhan-SRZA (mr.sinre) | https://github.com/Sobhan-SRZA
- * Developed for Persian Caesar | https://github.com/Persian-Caesar | https://dsc.gg/persian-caesar
- *
- * If you encounter any issues or need assistance with this code,
- * please make sure to credit "Persian Caesar" in your documentation or communications.
  */
